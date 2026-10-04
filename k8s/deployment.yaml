@@ -1,1 +1,123 @@
-
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langgraph-batch-worker
+  namespace: supply-chain-agents
+  labels:
+    app: langgraph-worker
+    tier: orchestrator
+  annotations:
+    # Stakater Reloader: rolling restart when the synced secret changes (key was malformed originally)
+    secret.reloader.stakater.com/reload: "langgraph-vault-secrets"
+spec:
+  # `replicas` intentionally omitted: KEDA owns it. A hard-coded value is reset on every `kubectl apply`.
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: langgraph-worker
+  template:
+    metadata:
+      labels:
+        app: langgraph-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: langgraph-execution-sa
+      # Must exceed the worst-case time to finish ONE in-flight message after SIGTERM.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: langgraph-worker
+      containers:
+        - name: agent-worker
+          # Replaced by CI with the immutable commit-SHA tag (kubectl set image).
+          image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/supply-chain/worker:<GIT_SHA>
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - { name: metrics, containerPort: 8000, protocol: TCP }
+            - { name: health,  containerPort: 8081, protocol: TCP }
+          env:
+            - { name: ENVIRONMENT, value: "production" }
+            - { name: LOG_JSON, value: "true" }
+            - { name: KAFKA_BOOTSTRAP_SERVERS, value: "<BROKER_1>:9096,<BROKER_2>:9096,<BROKER_3>:9096" }
+            - { name: KAFKA_SECURITY_PROTOCOL, value: "SASL_SSL" }
+            - { name: KAFKA_SASL_MECHANISM, value: "SCRAM-SHA-512" }
+            - { name: KAFKA_TOPIC_RECONCILIATION, value: "sap-nightly-reconciliation-topic" }
+            - { name: KAFKA_TOPIC_HUMAN_DECISIONS, value: "sap-reconciliation-human-decisions" }
+            - { name: KAFKA_TOPIC_REVIEW_REQUESTS, value: "sap-reconciliation-review-requests" }
+            - { name: KAFKA_TOPIC_DLQ, value: "sap-nightly-reconciliation-dlq" }
+            - { name: KAFKA_CONSUMER_GROUP, value: "langgraph-supply-chain-workers" }
+            - { name: SAP_BASE_URL, value: "https://<SAP_HOST>" }
+            - { name: SAP_TOKEN_URL, value: "https://<SAP_HOST>/sap/bc/sec/oauth2/token" }
+            - { name: HOME, value: "/tmp" }
+            - name: SAP_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: langgraph-vault-secrets, key: SAP_OAUTH_CLIENT_ID } }
+            - name: SAP_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: langgraph-vault-secrets, key: SAP_OAUTH_CLIENT_SECRET } }
+            - name: OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: langgraph-vault-secrets, key: OPENAI_API_KEY } }
+            - name: PAGERDUTY_INTEGRATION_KEY
+              valueFrom: { secretKeyRef: { name: langgraph-vault-secrets, key: PAGERDUTY_INTEGRATION_KEY } }
+            - name: CHECKPOINT_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: langgraph-vault-secrets, key: CHECKPOINT_DATABASE_URL } }
+            - name: KAFKA_SASL_USERNAME
+              valueFrom: { secretKeyRef: { name: langgraph-vault-secrets, key: KAFKA_SASL_USERNAME } }
+            - name: KAFKA_SASL_PASSWORD
+              valueFrom: { secretKeyRef: { name: langgraph-vault-secrets, key: KAFKA_SASL_PASSWORD } }
+          # Probes target the consumer loop heartbeat, not the always-up /metrics thread.
+          startupProbe:
+            httpGet: { path: /livez, port: health }
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /livez, port: health }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { memory: "2Gi" }   # no CPU limit: avoids CFS throttling stalls on bursty LLM I/O
+          volumeMounts:
+            - { name: tmp-volume, mountPath: /tmp }
+      volumes:
+        - name: tmp-volume
+          emptyDir: { sizeLimit: 256Mi }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: langgraph-batch-worker
+  namespace: supply-chain-agents
+spec:
+  maxUnavailable: 1     # maxUnavailable (not minAvailable) so scale-to-zero never blocks node drains
+  selector:
+    matchLabels:
+      app: langgraph-worker

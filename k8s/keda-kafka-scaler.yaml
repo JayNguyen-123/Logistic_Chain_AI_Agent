@@ -1,0 +1,60 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: kafka-scram-auth
+  namespace: supply-chain-agents
+spec:
+  secretTargetRef:
+    - { parameter: username, name: langgraph-vault-secrets, key: KAFKA_SASL_USERNAME }
+    - { parameter: password, name: langgraph-vault-secrets, key: KAFKA_SASL_PASSWORD }
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: langgraph-worker-scaler
+  namespace: supply-chain-agents
+  labels:
+    tier: orchestrator
+    app: langgraph-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: langgraph-batch-worker
+  minReplicaCount: 0
+  # Consumers beyond the partition count sit idle (KEDA also caps at partition count by default).
+  # Keep this <= partitions of the reconciliation topic, and within SAP API rate limits.
+  maxReplicaCount: 12
+  cooldownPeriod: 300
+  pollingInterval: 30
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - { type: Pods, value: 2, periodSeconds: 60 }
+  triggers:
+    # One trigger per consumed topic: human decisions must also wake the worker from zero.
+    - type: kafka
+      authenticationRef: { name: kafka-scram-auth }
+      metadata:
+        bootstrapServers: "<BROKER_1>:9096,<BROKER_2>:9096,<BROKER_3>:9096"
+        consumerGroup: langgraph-supply-chain-workers
+        topic: sap-nightly-reconciliation-topic
+        lagThreshold: "10"
+        activationLagThreshold: "0"   # activate when lag > 0
+        offsetResetPolicy: earliest
+        sasl: scram_sha512
+        tls: enable
+    - type: kafka
+      authenticationRef: { name: kafka-scram-auth }
+      metadata:
+        bootstrapServers: "<BROKER_1>:9096,<BROKER_2>:9096,<BROKER_3>:9096"
+        consumerGroup: langgraph-supply-chain-workers
+        topic: sap-reconciliation-human-decisions
+        lagThreshold: "20"
+        activationLagThreshold: "0"
+        offsetResetPolicy: earliest
+        sasl: scram_sha512
+        tls: enable

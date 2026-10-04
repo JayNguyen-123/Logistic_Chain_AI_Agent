@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: supply-chain-agents
+  labels:
+    name: supply-chain-agents
+    tier: orchestrator
+    environment: production
+    istio-injection: enabled
+    # Pod Security Admission: reject privileged / root pods in this namespace
+    # NOTE: with Istio, "restricted" requires the Istio CNI plugin (istio-init needs NET_ADMIN otherwise).
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
