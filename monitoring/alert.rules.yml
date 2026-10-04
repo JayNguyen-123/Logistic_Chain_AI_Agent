@@ -1,1 +1,58 @@
+groups:
+  - name: LangGraphSupplyChainAlerts
+    rules:
+      # Ratio of failed/DLQ outcomes. The original compared a per-second RATE to 0.15,
+      # which is not a percentage (fires at 9 failures/minute regardless of volume).
+      - alert: HighAgentFailureRate
+        expr: |
+          (
+            sum by (topic) (rate(langgraph_batch_events_total{outcome=~"failed|dlq"}[15m]))
+            /
+            sum by (topic) (rate(langgraph_batch_events_total{outcome!="skipped_duplicate"}[15m]))
+          ) > 0.15
+          and sum by (topic) (increase(langgraph_batch_events_total[15m])) >= 5
+        for: 5m
+        labels: { severity: critical, tier: orchestrator, service: supply-chain-engine }
+        annotations:
+          summary: "High failure ratio on {{ $labels.topic }}"
+          description: "More than 15% of processed events on {{ $labels.topic }} failed or were dead-lettered over 15 minutes."
 
+      - alert: SAPAmbiguousCommit
+        expr: increase(langgraph_sap_po_commits_total{outcome="ambiguous"}[10m]) > 0
+        labels: { severity: critical, tier: integration, service: sap-odata-gateway }
+        annotations:
+          summary: "SAP PO commit outcome unknown"
+          description: "A purchase order POST timed out and could not be reconciled. Manual check in SAP required (see batch logs for the 12-char reference)."
+
+      - alert: AgentCostSpike
+        expr: sum(increase(langgraph_agent_cost_usd_total[1h])) > 150
+        for: 5m
+        labels: { severity: warning, tier: billing, service: llm-gateway }
+        annotations:
+          summary: "Runaway multi-agent LLM cost"
+          description: "LLM spend exceeded $150 in the last hour. Check for review loops or abusive feedback traffic."
+
+      # Requires kafka-exporter (danielqsj): label is `consumergroup`, not `group`.
+      - alert: KafkaConsumerLag
+        expr: sum by (topic) (kafka_consumergroup_lag{consumergroup="langgraph-supply-chain-workers"}) > 500
+        for: 10m
+        labels: { severity: warning, tier: infrastructure, service: kafka-cluster }
+        annotations:
+          summary: "Reconciliation backlog on {{ $labels.topic }}"
+          description: "Consumer lag above 500 for 10 minutes - check KEDA scaling, partition count, or a stuck worker."
+
+      - alert: WorkerLoopStalled
+        expr: (time() - max(langgraph_worker_last_heartbeat_timestamp_seconds)) > 900 and count(langgraph_worker_last_heartbeat_timestamp_seconds) > 0
+        for: 2m
+        labels: { severity: critical, tier: orchestrator, service: supply-chain-engine }
+        annotations:
+          summary: "Worker consume loop stalled"
+          description: "No worker heartbeat for 15 minutes while pods are running."
+
+      - alert: SlowGraphSegments
+        expr: histogram_quantile(0.95, sum by (le) (rate(langgraph_batch_processing_seconds_bucket[10m]))) > 120
+        for: 10m
+        labels: { severity: warning, tier: integration, service: sap-odata-gateway }
+        annotations:
+          summary: "p95 graph segment latency > 2 min"
+          description: "Machine processing time (human think-time excluded) is high - check SAP OData and OpenAI latency."
