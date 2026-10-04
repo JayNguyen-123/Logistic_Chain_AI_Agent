@@ -1,1 +1,116 @@
+name: CI / Build / Deploy Worker
 
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Least privilege by default; jobs elevate individually.
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: supply-chain/worker
+  EKS_CLUSTER: supply-chain-eks-cluster
+  K8S_NAMESPACE: supply-chain-agents
+  K8S_DEPLOYMENT: langgraph-batch-worker
+
+jobs:
+  test:
+    name: Lint & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check src tests
+      - run: pytest            # offline unit + graph-flow tests (evals excluded via pyproject)
+
+  build-push:
+    name: Build, scan & push image
+    needs: test
+    # Never push images (or request AWS credentials) for pull requests.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production       # protect with required reviewers in repo settings
+    permissions:
+      contents: read
+      id-token: write             # OIDC -> short-lived AWS credentials
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require hash-pinned lock file
+        run: test -f requirements.lock || { echo "::error::requirements.lock missing (pip-compile --generate-hashes)"; exit 1; }
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}   # e.g. arn:aws:iam::<acct>:role/github-actions-ecr-role
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - id: meta
+        run: echo "image=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image (load locally for scanning)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Vulnerability scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # Immutable, SHA-only tag. No mutable `latest` (with IfNotPresent it silently ran stale code).
+      - name: Push image
+        run: docker push "${{ steps.meta.outputs.image }}"
+
+  deploy:
+    name: Roll out to EKS
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+      - name: Update image and wait for rollout
+        run: |
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION"
+          kubectl -n "$K8S_NAMESPACE" set image deployment/"$K8S_DEPLOYMENT" agent-worker="${{ needs.build-push.outputs.image }}"
+          # With KEDA scale-to-zero there may be no pods; only wait when replicas > 0.
+          if [ "$(kubectl -n "$K8S_NAMESPACE" get deploy "$K8S_DEPLOYMENT" -o jsonpath='{.spec.replicas}')" != "0" ]; then
+            kubectl -n "$K8S_NAMESPACE" rollout status deployment/"$K8S_DEPLOYMENT" --timeout=10m
+          fi
