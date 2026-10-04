@@ -1,0 +1,17 @@
+[project]
+name = "logichain-agent"
+version = "1.0.0"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -m 'not evals'"
+markers = ["evals: LangSmith regression evals (real LLM calls, needs LANGSMITH_API_KEY)"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "UP007", "UP006", "UP035"]

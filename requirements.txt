@@ -1,0 +1,28 @@
+# Runtime dependencies (compatible ranges).
+# PRODUCTION BUILDS MUST INSTALL FROM THE HASH-PINNED LOCK FILE:
+#   pip install pip-tools && pip-compile --generate-hashes --strip-extras -o requirements.lock requirements.txt
+# The original pins were mutually incompatible (langchain-openai 0.1.x requires
+# langchain-core <0.3 while langchain-core 0.3.1 was pinned; pydantic-settings was missing;
+# kafka-python 2.0.2 does not import on Python >= 3.12).
+
+# --- Orchestration & LLM ---
+langgraph>=1.0,<2
+langgraph-checkpoint-postgres>=3.0,<4
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
+pydantic>=2.9,<3
+pydantic-settings>=2.6,<3
+
+# --- Persistence (LangGraph Postgres checkpointer) ---
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
+
+# --- Messaging ---
+kafka-python>=2.2,<3
+
+# --- HTTP ---
+requests>=2.32.3,<3
+urllib3>=2.2.3,<3
+
+# --- Observability ---
+prometheus-client>=0.21,<1

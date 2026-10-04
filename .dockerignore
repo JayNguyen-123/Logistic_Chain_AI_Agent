@@ -1,0 +1,8 @@
+# Allow-list approach: only what the image needs is sent to the build context.
+*
+!Dockerfile
+!requirements.txt
+!requirements.lock
+!src/
+src/**/__pycache__
+src/**/*.py[cod]
