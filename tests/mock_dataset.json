@@ -1,0 +1,100 @@
+[
+  {
+    "id": "case_001_standard_restock",
+    "description": "Happy path: new batch pauses at the human gate with no anomalies.",
+    "inputs": {
+      "batch_id": "90001",
+      "purchase_order_draft": {
+        "company_code": "1010",
+        "vendor_id": "VEND-001",
+        "items": [
+          {"material_id": "MAT-102", "quantity": 100, "plant": "1010", "baseline_contract_price": 150.00},
+          {"material_id": "MAT-509", "quantity": 10, "plant": "1010", "baseline_contract_price": 45.00}
+        ]
+      }
+    },
+    "reference_outputs": {
+      "review_status": "PENDING",
+      "execution_status": "AWAITING_REVIEW",
+      "anomalies_detected": []
+    }
+  },
+  {
+    "id": "case_002_multi_item_amendment",
+    "description": "Free-text feedback adjusts quantity and plant on different line items (real LLM).",
+    "inputs": {
+      "batch_id": "90002",
+      "purchase_order_draft": {
+        "company_code": "1010",
+        "vendor_id": "VEND-001",
+        "items": [
+          {"material_id": "MAT-102", "quantity": 100, "plant": "1010", "baseline_contract_price": 150.00},
+          {"material_id": "MAT-509", "quantity": 10, "plant": "1010", "baseline_contract_price": 45.00}
+        ]
+      },
+      "human_decision": {
+        "human_action": "AMEND",
+        "human_feedback": "Cut material MAT-102 quantity down to 25 units and shift MAT-509 to plant 1020 immediately."
+      }
+    },
+    "reference_outputs": {
+      "review_status": "PENDING",
+      "execution_status": "AWAITING_REVIEW",
+      "purchase_order_draft": {
+        "items": [
+          {"material_id": "MAT-102", "quantity": 25, "plant": "1010"},
+          {"material_id": "MAT-509", "quantity": 10, "plant": "1020"}
+        ]
+      }
+    }
+  },
+  {
+    "id": "case_003_sap_pricing_anomaly",
+    "description": "Vendor swap: alternative supplier quote >15% above contract baseline is flagged CRITICAL.",
+    "inputs": {
+      "batch_id": "90003",
+      "purchase_order_draft": {
+        "company_code": "1010",
+        "vendor_id": "VEND-001",
+        "items": [
+          {"material_id": "MAT-102", "quantity": 50, "plant": "1010", "baseline_contract_price": 100.00}
+        ]
+      },
+      "human_decision": {
+        "human_action": "SWAP_VENDOR",
+        "target_material_id": "MAT-102"
+      }
+    },
+    "reference_outputs": {
+      "execution_status": "AWAITING_REVIEW",
+      "anomalies_detected": [
+        {"type": "PRICE_SPIKE", "severity": "CRITICAL"}
+      ]
+    }
+  },
+  {
+    "id": "case_004_invalid_material_handling",
+    "description": "Vendor swap without a target material is bounced back to the reviewer.",
+    "inputs": {
+      "batch_id": "90004",
+      "purchase_order_draft": {
+        "company_code": "1010",
+        "vendor_id": "VEND-001",
+        "items": [
+          {"material_id": "MAT-102", "quantity": 50, "plant": "1010", "baseline_contract_price": 100.00}
+        ]
+      },
+      "human_decision": {
+        "human_action": "SWAP_VENDOR",
+        "human_feedback": "Swap the supplier on that one overpriced part."
+      }
+    },
+    "reference_outputs": {
+      "review_status": "AMENDED",
+      "execution_status": "AWAITING_REVIEW",
+      "anomalies_detected": [
+        {"type": "GATE_VALIDATION", "severity": "WARNING"}
+      ]
+    }
+  }
+]
